@@ -1,0 +1,117 @@
+# AWS Cloud Cost Pricing Calculator
+
+A robust Python command-line application that reads infrastructure requirements from a CSV or Excel file, queries regional pricing data from the AWS Price List API, and outputs a detailed monthly cost estimate report.
+
+The application works **100% offline** by downloading and caching AWS bulk pricing database sheets locally, meaning it does **not require any AWS account or credentials** to run.
+
+---
+
+## Supported Services & Features
+
+| Service | Feature Description | Input Configuration Details |
+| :--- | :--- | :--- |
+| **EC2** (Compute) | Matches `custom` vCPU & RAM requirements to the cheapest instance type in the region, or looks up explicit types (e.g. `t3.medium`). Supports OS billing for **Linux**, **Windows**, **RHEL**, and **SUSE**. | `service = ec2`<br>Provide `vcpu` & `memory_gb` (for custom specs matching), or type (e.g., `t3.medium`). Provide `os_or_engine` (e.g., `Ubuntu Linux (64-bit)`).<br>*(Optional)* Add `size_gb` to include attached `gp3` storage pricing in the row cost. |
+| **EBS** (Storage) | Calculates monthly EBS storage costs for **gp3**, **gp2**, **io1**, **io2**, **st1**, **sc1**, and **magnetic** volumes. | `service = ebs`<br>Provide volume class in `type` (e.g., `gp3`) and volume size in `size_gb`. |
+| **RDS** (Database) | Calculates database instance cost by database engine (**PostgreSQL**, **MySQL**, **MariaDB**, **Oracle**, **SQL Server**) and automatically computes gp3 Single-AZ database storage costs if storage size is specified. | `service = rds`<br>Provide instance type in `type` (e.g., `db.t3.medium`), database engine in `os_or_engine` (e.g., `PostgreSQL 14`), and database storage in `size_gb`. |
+| **S3** (Object Storage)| Calculates object storage costs for **Standard**, **Infrequent Access (Standard-IA)**, **One Zone-IA**, **Glacier**, **Glacier Deep Archive**, and **Intelligent Tiering** classes. | `service = s3`<br>Provide storage class in `type` (e.g., `Standard`) and storage size in `size_gb`. |
+| **EKS** (Kubernetes) | Estimates the hourly Kubernetes control plane management fee ($0.10/hour). | `service = eks`<br>Provide number of clusters in `quantity` (defaults to 1). |
+| **Data Transfer** | Computes tiered egress bandwidth costs to the internet, applying region-specific rates (e.g. Jakarta ap-southeast-3 tiers) and automatically discounting the **100 GB global free tier**. | `service = data_transfer`<br>Provide egress volume in `size_gb`. |
+
+---
+
+## Installation & Setup
+
+1. **Prerequisites:** Python 3.8+ installed.
+2. **Virtual Environment Setup:**
+   ```bash
+   # Create a virtual environment
+   python3 -m venv pyenv
+   
+   # Activate the environment
+   source pyenv/bin/activate
+   
+   # Install required dependencies
+   pip install pandas openpyxl requests tabulate
+   ```
+
+---
+
+## How to Run the Calculator
+
+Execute the script from the workspace directory by passing the path of your input spreadsheet:
+
+```bash
+# Process a CSV file (generates template_cost_estimate.csv)
+./pyenv/bin/python pricing_calculator.py template.csv
+
+# Process an Excel file (generates template_cost_estimate.xlsx)
+./pyenv/bin/python pricing_calculator.py template.xlsx
+
+# Change target region and force matching with an ARM64 (Graviton) architecture (default is x86_64)
+./pyenv/bin/python pricing_calculator.py template.csv --region ap-southeast-1 --architecture arm64
+
+# Force cache clear and redownload pricing databases
+./pyenv/bin/python pricing_calculator.py template.csv --clear-cache
+```
+
+### CLI Arguments
+* `input_file`: Path to the input CSV or Excel file.
+* `--output`: Optional custom name/path for the output report file.
+* `--region`: Default AWS region code to use (default: `ap-southeast-3` - Jakarta).
+* `--architecture`: Preferred processor architecture for custom specs matching (`x86_64`, `arm64`, or `any`) (default: `x86_64`).
+* `--cache-dir`: Directory where AWS price database sheets are saved (default: `.cache`).
+* `--clear-cache`: Clears raw pricing sheets from cache before running to fetch the latest databases from AWS.
+
+---
+
+## Input Formats
+
+The calculator automatically supports **two input formats**:
+
+### 1. Direct VM Specification Import (e.g., from VMware)
+If the calculator detects columns named `VM`, `CPUs`, `Memory`, and `Provisioned MiB`, it automatically parses the file as a custom virtual machine list.
+* **VM**: Handled as the instance ID/name.
+* **CPUs**: Handled as target vCPUs.
+* **Memory**: Handled as target RAM (automatically detects if in MB or GB, e.g. `4,096` MB maps to `4.0` GB).
+* **Provisioned MiB**: Handled as storage size (automatically converted to GB, e.g. `225,400` MiB maps to `220.1` GB).
+
+For each VM row in this format, the calculator generates **two items** in the output report:
+1. **EC2 Compute row:** Resolved to the cheapest instance meeting or exceeding the CPUs and Memory requirements.
+2. **EBS Storage row:** Calculated as standard attached `gp3` storage volume.
+
+### 2. Standard Calculator Format
+A template CSV with these columns is provided as [template.csv](file:///Users/girirahayu/Documents/cloud_pricing/template.csv) and [template.xlsx](file:///Users/girirahayu/Documents/cloud_pricing/template.xlsx).
+
+| Column Name | Description | Default / Fallback Value |
+| :--- | :--- | :--- |
+| `id` | Unique row identifier (e.g. `web-server`, `db-storage`) | *(Required)* |
+| `service` | AWS Service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`) | *(Required)* |
+| `region` | AWS region code (e.g., `ap-southeast-3`, `us-east-1`) | `ap-southeast-3` |
+| `type` | Instance type (e.g., `t3.medium`, `db.t3.large`), volume type (`gp3`), or storage class (`Standard`). Leave blank or enter `custom` for EC2 specs matching. | `custom` |
+| `vcpu` | Number of requested vCPUs (used for `custom` EC2 matching) | `0` |
+| `memory_gb` | Gigabytes of requested RAM (used for `custom` EC2 matching) | `0.0` |
+| `os_or_engine` | Operating System for EC2 (`Linux`, `Windows`, `RHEL`, `SUSE`) or Database Engine for RDS (`PostgreSQL`, `MySQL`, `MariaDB`, `Oracle`, `SQL Server`).<br>**Smart Mapping:** Accepts vendor names (e.g., `Ubuntu Linux (64-bit)` $\rightarrow$ `Linux`, `Microsoft Windows Server 2022` $\rightarrow$ `Windows`, `PostgreSQL 14` $\rightarrow$ `PostgreSQL`). | `Linux` (for EC2)<br>`PostgreSQL` (for RDS) |
+| `size_gb` | Storage size in GB (for EBS, RDS storage, S3) or egress volume in GB (for Data Transfer) | `0.0` |
+| `quantity` | Number of instances/volumes | `1` |
+| `hours_per_month` | Monthly operational hours (24/7 is 730 hours) | `730` |
+| `description` | Optional text note | `""` |
+
+---
+
+## Output Reports
+
+The generated Excel/CSV cost estimate reports include the following columns:
+* **User Input Fields:** `id`, `service`, `region`, `type`, `os_or_engine`, `size_gb`, `quantity`, `hours_per_month`, `description`.
+* **Requested specs vs Fitted specs:**
+  * `requested_vcpu` & `requested_memory_gb`: The original requirements entered by the user.
+  * `matched_vcpu` & `matched_memory_gb`: The actual capacity of the matched AWS cloud instance (e.g., requesting 4 vCPU/4 GB matches `c7i-flex.xlarge` which has 4 vCPU/8.0 GB RAM).
+* **Cost Details:**
+  * `matched_type`: The resolved instance type/class (e.g. `t3.small`).
+  * `unit_price`: The hourly billing rate or GB-month storage rate.
+  * `monthly_price`: The calculated monthly charge in USD.
+  * `notes`: Comprehensive explanations (e.g., `"Cheapest x86_64 matching >= 4 vCPU, 4.0 GB RAM (Linux)"` or tiered egress details).
+
+### Summary & Audit Rows
+The exported reports automatically append two audit rows at the end of the data lines:
+1. **`TOTAL_ESTIMATED_MONTHLY_COST`**: Records the total sum of all calculated monthly costs.
+2. **`AWS_PRICING_DATABASE_VERSION`**: Lists the exact database publication dates from AWS for every service used, establishing a robust audit trail.
