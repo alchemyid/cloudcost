@@ -16,6 +16,7 @@ The application works **100% offline** by downloading and caching AWS bulk prici
 | **S3** (Object Storage)| Calculates object storage costs for **Standard**, **Infrequent Access (Standard-IA)**, **One Zone-IA**, **Glacier**, **Glacier Deep Archive**, and **Intelligent Tiering** classes. | `service = s3`<br>Provide storage class in `type` (e.g., `Standard`) and storage size in `size_gb`. |
 | **EKS** (Kubernetes) | Estimates the hourly Kubernetes control plane management fee ($0.10/hour). | `service = eks`<br>Provide number of clusters in `quantity` (defaults to 1). |
 | **Data Transfer** | Computes tiered egress bandwidth costs to the internet, applying region-specific rates (e.g. Jakarta ap-southeast-3 tiers) and automatically discounting the **100 GB global free tier**. | `service = data_transfer`<br>Provide egress volume in `size_gb`. |
+| **DRS** (Disaster Recovery) | Calculates AWS Elastic Disaster Recovery fee (per server replication hour) and staging storage costs (dynamic EBS pricing based on the configured volume type, defaulting to `gp3`). | `service = drs`<br>Provide replication storage size per server in `size_gb`, number of servers in `quantity`, volume type in `type` (e.g., `gp3`), and replication hours in `hours_per_month` (defaults to 730 for 24/7). |
 
 ---
 
@@ -60,7 +61,14 @@ Execute the script from the workspace directory by passing the path of your inpu
 * `--region`: Default AWS region code to use (default: `ap-southeast-3` - Jakarta).
 * `--architecture`: Preferred processor architecture for custom specs matching (`x86_64`, `arm64`, or `any`) (default: `x86_64`).
 * `--cache-dir`: Directory where AWS price database sheets are saved (default: `.cache`).
-* `--clear-cache`: Clears raw pricing sheets from cache before running to fetch the latest databases from AWS.
+* `--clear-cache`: Clears both raw and preprocessed pricing files from the cache directory to force a fresh download of the latest databases from the AWS Price List API.
+
+### Caching Mechanism
+
+To optimize performance and enable 100% offline usage, the calculator implements a two-tier caching mechanism:
+1. **First-time Query / Cold Start**: The engine downloads the raw pricing database for each active service from the AWS Price List API bulk endpoint and stores it locally under `--cache-dir` as `{Service}_{region}.json`. It then parses the relevant pricing dimensions and structures them into a lightweight file named `{service}_{region}_processed.json`.
+2. **Subsequent Queries / Cache Hit**: The engine directly reads the processed and cached prices, avoiding any network calls or repetitive large-file processing.
+3. **Forced Cache Update**: When the `--clear-cache` parameter is passed, all cached raw and processed files in `--cache-dir` are deleted. On the next execution, the calculator will fetch fresh pricing sheets from AWS and rebuild the caches.
 
 ---
 
@@ -85,7 +93,7 @@ A template CSV with these columns is provided as [template.csv](file:///Users/gi
 | Column Name | Description | Default / Fallback Value |
 | :--- | :--- | :--- |
 | `id` | Unique row identifier (e.g. `web-server`, `db-storage`) | *(Required)* |
-| `service` | AWS Service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`) | *(Required)* |
+| `service` | AWS Service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`, `drs`) | *(Required)* |
 | `region` | AWS region code (e.g., `ap-southeast-3`, `us-east-1`) | `ap-southeast-3` |
 | `type` | Instance type (e.g., `t3.medium`, `db.t3.large`), volume type (`gp3`), or storage class (`Standard`). Leave blank or enter `custom` for EC2 specs matching. | `custom` |
 | `vcpu` | Number of requested vCPUs (used for `custom` EC2 matching) | `0` |

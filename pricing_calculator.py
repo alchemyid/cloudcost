@@ -388,13 +388,46 @@ class PricingEngine:
         if os.path.exists(rds_storage_processed):
             with open(rds_storage_processed) as f:
                 self.rds_storage_cache[region] = json.load(f)
-        if os.path.exists(drs_processed):
-            with open(drs_processed) as f:
-                self.drs_cache[region] = json.load(f)
-        else:
-            self.drs_cache[region] = {"server_hour_rate": 0.028, "storage_gb_month_rate": 0.11}
+        # DRS Preprocessing
+        if not os.path.exists(drs_processed):
+            raw_drs = self.fetch_json_with_cache("AWSElasticDisasterRecovery", region)
+            pub_date = ""
+            server_hour_rate = 0.028
+            if raw_drs:
+                print(f"Preprocessing DRS pricing for {region}...")
+                pub_date = raw_drs.get("publicationDate", "")
+                products = raw_drs.get("products", {})
+                terms = raw_drs.get("terms", {}).get("OnDemand", {})
+                for sku, product in products.items():
+                    if product.get("productFamily") == "Server DR":
+                        sku_terms = terms.get(sku, {})
+                        for term_val in sku_terms.values():
+                            for dim_val in term_val.get("priceDimensions", {}).values():
+                                price_str = dim_val.get("pricePerUnit", {}).get("USD")
+                                if price_str is not None:
+                                    server_hour_rate = float(price_str)
+                                    break
+                            break
+                        break
+            
+            # Use EBS gp3 storage price if available, fallback to 0.11
+            ebs_rates = self.ebs_cache.get(region, {})
+            storage_rate = ebs_rates.get("gp3", ebs_rates.get("gp2", 0.11))
+            
+            self.drs_cache[region] = {
+                "publicationDate": pub_date,
+                "server_hour_rate": server_hour_rate,
+                "storage_gb_month_rate": storage_rate
+            }
             with open(drs_processed, "w") as f:
                 json.dump(self.drs_cache[region], f, indent=2)
+                
+        if os.path.exists(drs_processed):
+            with open(drs_processed) as f:
+                data = json.load(f)
+                self.drs_cache[region] = data
+                self.pub_dates[f"drs_{region}"] = data.get("publicationDate", "")
+
 
         # S3, EKS, Data Transfer load directly
         raw_s3 = self.fetch_json_with_cache("AmazonS3", region)
@@ -586,19 +619,20 @@ class PricingEngine:
                                 return float(price_str)
         return 0.10
     
-    def get_drs_price(self, region, servers, storage_gb):
-        """Get AWS DRS cost based on number of servers and storage GB."""
+    def get_drs_price(self, region, servers, storage_gb, volume_type="gp3", hours=730):
+        """Get AWS DRS cost based on number of servers and storage GB per server."""
         drs_data = self.drs_cache.get(region, {})
         if not drs_data:
-        # Fallback rates
             drs_data = {"server_hour_rate": 0.028, "storage_gb_month_rate": 0.11}
     
-        # Perhitungan biaya server dan storage
-        server_cost = servers * drs_data["server_hour_rate"] * 730  # Total server cost per month (servers * hourly_rate * 730 monthly hours)
-        storage_cost = storage_gb * drs_data["storage_gb_month_rate"]  # Total storage cost
-        total_cost = server_cost + storage_cost  # Total monthly cost
-    
-        return total_cost, server_cost, storage_cost  # Pastikan tiga nilai dikembalikan
+        server_rate = drs_data.get("server_hour_rate", 0.028)
+        storage_rate = self.get_ebs_price(region, volume_type) if volume_type else drs_data.get("storage_gb_month_rate", 0.11)
+        
+        server_cost = servers * server_rate * hours
+        storage_cost = servers * storage_gb * storage_rate
+        total_cost = server_cost + storage_cost
+        
+        return total_cost, server_cost, storage_cost
 
 
     def get_dt_tiers(self, region):
@@ -857,13 +891,18 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
         elif service == 'drs':
             servers = qty  # Use 'quantity' as number of servers for DRS
             storage_gb = size_gb  # Use 'size_gb' as storage amount for DRS
+            ebs_type = res_type if res_type and res_type.lower() != 'custom' else 'gp3'
             
-            # Get costs from engine
-            unit_price, server_cost, storage_cost = engine.get_drs_price(region, servers, storage_gb)
+            # Get costs from engine, passing target volume type and hours
+            _, server_cost, storage_cost = engine.get_drs_price(
+                region, servers, storage_gb, volume_type=ebs_type, hours=hours
+            )
             
-            # Summarize total monthly price
+            unit_price = engine.drs_cache.get(region, {}).get("server_hour_rate", 0.028)
+            storage_rate = engine.get_ebs_price(region, ebs_type)
+            
             monthly_price = server_cost + storage_cost
-            calc_note = f"{servers} servers (${server_cost:.2f}) + {storage_gb:.2f} GB Storage (${storage_cost:.2f})"
+            calc_note = f"{servers} servers ({hours} hrs/mo @ ${unit_price:.3f}/hr) + {ebs_type} storage ({storage_gb * qty:.1f} GB @ ${storage_rate:.3f}/GB-mo)"
         else:
             calc_note = f"Skipped: Unknown service type '{service}'"
             
@@ -903,9 +942,9 @@ def main():
     args = parser.parse_args()
     
     if args.clear_cache:
-        print("Clearing raw JSON cache...")
+        print("Clearing all cached pricing files...")
         for filename in os.listdir(args.cache_dir):
-            if filename.endswith(".json") and not filename.endswith("_processed.json"):
+            if filename.endswith(".json"):
                 os.remove(os.path.join(args.cache_dir, filename))
                 
     # Initialize Engine
