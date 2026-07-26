@@ -118,6 +118,7 @@ class PricingEngine:
         self.eks_cache = {}
         self.dt_cache = {}
         self.pub_dates = {}
+        self.drs_cache = {}
 
     def get_bulk_url(self, service, region):
         """Build standard public JSON Bulk API URL."""
@@ -149,7 +150,8 @@ class PricingEngine:
         # EC2 Preprocessing
         ec2_processed = os.path.join(self.cache_dir, f"ec2_{region}_processed.json")
         ebs_processed = os.path.join(self.cache_dir, f"ebs_{region}_processed.json")
-        
+        drs_processed = os.path.join(self.cache_dir, f"drs_{region}_processed.json")
+
         if not os.path.exists(ec2_processed) or not os.path.exists(ebs_processed):
             raw_ec2 = self.fetch_json_with_cache("AmazonEC2", region)
             if raw_ec2:
@@ -386,6 +388,13 @@ class PricingEngine:
         if os.path.exists(rds_storage_processed):
             with open(rds_storage_processed) as f:
                 self.rds_storage_cache[region] = json.load(f)
+        if os.path.exists(drs_processed):
+            with open(drs_processed) as f:
+                self.drs_cache[region] = json.load(f)
+        else:
+            self.drs_cache[region] = {"server_hour_rate": 0.028, "storage_gb_month_rate": 0.11}
+            with open(drs_processed, "w") as f:
+                json.dump(self.drs_cache[region], f, indent=2)
 
         # S3, EKS, Data Transfer load directly
         raw_s3 = self.fetch_json_with_cache("AmazonS3", region)
@@ -576,6 +585,21 @@ class PricingEngine:
                             if price_str is not None:
                                 return float(price_str)
         return 0.10
+    
+    def get_drs_price(self, region, servers, storage_gb):
+        """Get AWS DRS cost based on number of servers and storage GB."""
+        drs_data = self.drs_cache.get(region, {})
+        if not drs_data:
+        # Fallback rates
+            drs_data = {"server_hour_rate": 0.028, "storage_gb_month_rate": 0.11}
+    
+        # Perhitungan biaya server dan storage
+        server_cost = servers * drs_data["server_hour_rate"] * 730  # Total server cost per month (servers * hourly_rate * 730 monthly hours)
+        storage_cost = storage_gb * drs_data["storage_gb_month_rate"]  # Total storage cost
+        total_cost = server_cost + storage_cost  # Total monthly cost
+    
+        return total_cost, server_cost, storage_cost  # Pastikan tiga nilai dikembalikan
+
 
     def get_dt_tiers(self, region):
         """Get tiered egress rates for Data Transfer."""
@@ -830,7 +854,16 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
         elif service == 'data_transfer' or service == 'data-transfer':
             monthly_price, calc_note = engine.calculate_dt_cost(region, size_gb)
             unit_price = monthly_price / size_gb if size_gb > 0 else 0.0
+        elif service == 'drs':
+            servers = qty  # Use 'quantity' as number of servers for DRS
+            storage_gb = size_gb  # Use 'size_gb' as storage amount for DRS
             
+            # Get costs from engine
+            unit_price, server_cost, storage_cost = engine.get_drs_price(region, servers, storage_gb)
+            
+            # Summarize total monthly price
+            monthly_price = server_cost + storage_cost
+            calc_note = f"{servers} servers (${server_cost:.2f}) + {storage_gb:.2f} GB Storage (${storage_cost:.2f})"
         else:
             calc_note = f"Skipped: Unknown service type '{service}'"
             
