@@ -20,6 +20,7 @@ The application works **100% offline** by downloading and caching AWS bulk prici
 | **NAT Gateway** | Calculates the hourly fee per NAT Gateway + data processing fee per GB. | `service = nat` or `nat_gateway`<br>Provide NAT Gateway hours in `hours_per_month` (defaults to 730 for 24/7), number of gateways in `quantity` (defaults to 1), and data processed in `size_gb` to include per-GB charges. |
 | **VPN Connection** | Site-to-Site VPN or Client VPN connection costs. | `service = vpn` or `vpn_connection`<br>Provide VPN type in `type` (`site-to-site` for Site-to-Site VPN, `client-endpoint` for Client VPN Endpoints, or `client-connection` for Client VPN Connections), and connection hours in `hours_per_month` (defaults to 730 for 24/7). |
 | **Public Static IP (Elastic IP)** | Billed per public IPv4 address per hour (standard AWS charge of $0.005/hr). | `service = eip` or `public_ip`<br>Provide IP status in `type` (`in-use` or `idle`), number of IPs in `quantity`, and billing hours in `hours_per_month` (defaults to 730). |
+| **Azure Services** (Virtual Machines & Storage) | Estimates Azure VM instances (Standard PAYG rates fetched dynamically via Azure Prices API) and Azure Storage volumes (Managed Disks, Blob Storage) using regional rates. | `service = azure`<br>For VMs: provide SKU in `type` (e.g. `Standard_D2s_v5`), operating system in `os_or_engine` (`Linux` or `Windows`).<br>For Storage: provide disk or storage type in `type` (e.g., `Premium_SSD`, `Standard_SSD`, `Standard_HDD`, `Blob Storage`) and size in `size_gb`. |
 
 ---
 
@@ -93,19 +94,19 @@ For each VM row in this format, the calculator generates **two items** in the ou
 ### 2. Standard Calculator Format
 A template CSV with these columns is provided as [template.csv](file:///Users/girirahayu/Documents/cloud_pricing/template.csv) and [template.xlsx](file:///Users/girirahayu/Documents/cloud_pricing/template.xlsx).
 
-| Column Name | Description | Default / Fallback Value |
-| :--- | :--- | :--- |
-| `id` | Unique row identifier (e.g. `web-server`, `db-storage`) | *(Required)* |
-| `service` | AWS Service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`, `drs`) | *(Required)* |
-| `region` | AWS region code (e.g., `ap-southeast-3`, `us-east-1`) | `ap-southeast-3` |
-| `type` | Instance type (e.g., `t3.medium`, `db.t3.large`), volume type (`gp3`), or storage class (`Standard`). Leave blank or enter `custom` for EC2 specs matching. | `custom` |
-| `vcpu` | Number of requested vCPUs (used for `custom` EC2 matching) | `0` |
-| `memory_gb` | Gigabytes of requested RAM (used for `custom` EC2 matching) | `0.0` |
-| `os_or_engine` | Operating System for EC2 (`Linux`, `Windows`, `RHEL`, `SUSE`) or Database Engine for RDS (`PostgreSQL`, `MySQL`, `MariaDB`, `Oracle`, `SQL Server`).<br>**Smart Mapping:** Accepts vendor names (e.g., `Ubuntu Linux (64-bit)` $\rightarrow$ `Linux`, `Microsoft Windows Server 2022` $\rightarrow$ `Windows`, `PostgreSQL 14` $\rightarrow$ `PostgreSQL`). | `Linux` (for EC2)<br>`PostgreSQL` (for RDS) |
-| `size_gb` | Storage size in GB (for EBS, RDS storage, S3) or egress volume in GB (for Data Transfer) | `0.0` |
-| `quantity` | Number of instances/volumes | `1` |
-| `hours_per_month` | Monthly operational hours (24/7 is 730 hours) | `730` |
-| `description` | Optional text note | `""` |
+| Column Name | Status | Description | Default / Fallback Value |
+| :--- | :--- | :--- | :--- |
+| `id` | **Mandatory** | Unique row identifier (e.g. `web-server`, `db-storage`) | *(None - must be provided)* |
+| `service` | **Mandatory** | Cloud service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`, `drs`, `nat`, `vpn`, `eip`, `azure`) | *(None - must be provided)* |
+| `region` | **Optional** | Cloud region code (e.g., `ap-southeast-3`, `southeastasia`, `us-east-1`) | `ap-southeast-3` (AWS) / `southeastasia` (Azure) |
+| `type` | **Optional** | Instance type (e.g., `t3.medium`, `Standard_D2s_v5`), volume type (`gp3`), or storage class (`Standard`). Leave blank or enter `custom` for EC2/Azure VM specs matching. | `custom` |
+| `vcpu` | **Optional** | Number of requested vCPUs (used for `custom` compute specs matching) | `0` |
+| `memory_gb` | **Optional** | Gigabytes of requested RAM (used for `custom` compute specs matching) | `0.0` |
+| `os_or_engine` | **Optional** | Operating System for EC2/Azure (`Linux`, `Windows`, `RHEL`, `SUSE`) or Database Engine for RDS (`PostgreSQL`, `MySQL`, `MariaDB`, `Oracle`, `SQL Server`).<br>**Smart Mapping:** Accepts vendor names (e.g., `Ubuntu Linux (64-bit)` $\rightarrow$ `Linux`, `Microsoft Windows Server 2022` $\rightarrow$ `Windows`, `PostgreSQL 14` $\rightarrow$ `PostgreSQL`). | `Linux` (for EC2/Azure)<br>`PostgreSQL` (for RDS) |
+| `size_gb` | **Optional** | Storage size in GB (for EBS, RDS storage, S3, Azure storage) or egress volume in GB (for Data Transfer / NAT Gateway processing) | `0.0` |
+| `quantity` | **Optional** | Number of instances/volumes | `1` |
+| `hours_per_month` | **Optional** | Monthly operational hours (24/7 is 730 hours) | `730` |
+| `description` | **Optional** | Optional text note | `""` |
 
 ---
 

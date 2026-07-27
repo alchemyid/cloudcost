@@ -120,6 +120,7 @@ class PricingEngine:
         self.pub_dates = {}
         self.drs_cache = {}
         self.vpc_cache = {}
+        self.azure_cache = {}
 
     def get_bulk_url(self, service, region):
         """Build standard public JSON Bulk API URL."""
@@ -146,6 +147,143 @@ class PricingEngine:
             print(f"Error downloading bulk data for {service} in {region}: {e}")
             return None
 
+    def initialize_azure_prices(self):
+        """No-op initialization since pricing is fetched on-demand."""
+        pass
+
+    def get_azure_vm_price(self, region, vm_sku, os_name="Linux"):
+        """Get Azure VM pricing on-demand with caching."""
+        sku_clean = vm_sku.strip()
+        region_clean = region.strip().lower().replace(" ", "")
+        os_clean = os_name.strip().lower()
+        is_windows = "windows" in os_clean
+        
+        cache_key = f"vm:{region_clean}:{sku_clean}:{is_windows}"
+        if cache_key in self.azure_cache:
+            return self.azure_cache[cache_key]
+            
+        # Try local processed file
+        azure_cache_file = os.path.join(self.cache_dir, "azure_prices_processed.json")
+        processed_data = {}
+        if os.path.exists(azure_cache_file):
+            try:
+                with open(azure_cache_file, "r") as f:
+                    processed_data = json.load(f)
+                    if cache_key in processed_data:
+                        self.azure_cache[cache_key] = processed_data[cache_key]
+                        return processed_data[cache_key]
+            except Exception:
+                pass
+                
+        # Query API on-demand
+        url = f"https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview&$filter=serviceName eq 'Virtual Machines' and armRegionName eq '{region_clean}' and armSkuName eq '{sku_clean}' and priceType eq 'Consumption'"
+        try:
+            print(f"Fetching Azure VM pricing from API for {sku_clean} ({os_name}) in {region_clean}...")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("Items", [])
+            
+            valid_items = []
+            for item in items:
+                prod_lower = item.get("productName", "").lower()
+                meter_lower = item.get("meterName", "").lower()
+                
+                if "spot" in prod_lower or "spot" in meter_lower:
+                    continue
+                if "low priority" in prod_lower or "low priority" in meter_lower:
+                    continue
+                    
+                contains_windows = "windows" in prod_lower
+                if is_windows == contains_windows:
+                    valid_items.append(item)
+                    
+            price = 0.0
+            if valid_items:
+                price = float(valid_items[0].get("retailPrice", 0.0))
+            else:
+                print(f"Warning: No Azure VM SKU matched for {sku_clean} in {region_clean}. Using standard fallback.")
+                price = 0.212 if is_windows else 0.12
+            
+            # Cache it
+            self.azure_cache[cache_key] = price
+            processed_data[cache_key] = price
+            with open(azure_cache_file, "w") as f:
+                json.dump(processed_data, f, indent=2)
+                
+            return price
+        except Exception as e:
+            print(f"Error querying Azure pricing API: {e}")
+            return 0.212 if is_windows else 0.12
+
+    def get_azure_storage_price(self, region, storage_type="Standard_SSD"):
+        """Get Azure Storage pricing."""
+        type_lower = storage_type.lower()
+        # Fallback values per GB-month (approximate rates for Azure LRS storage)
+        if "premium" in type_lower:
+            return 0.15
+        elif "standard ssd" in type_lower or "standard_ssd" in type_lower:
+            return 0.096
+        elif "standard hdd" in type_lower or "standard_hdd" in type_lower:
+            return 0.05
+        elif "blob" in type_lower or "hot" in type_lower:
+            return 0.02
+        return 0.096
+
+    def get_azure_nat_gateway_price(self, region):
+        """Get Azure NAT Gateway hourly fee and per-GB processing fee."""
+        return 0.045, 0.045
+
+    def get_azure_vpn_gateway_price(self, region, vpn_type="basic"):
+        """Get Azure VPN Gateway hourly rate based on type."""
+        type_lower = vpn_type.lower()
+        if "gw1" in type_lower or "standard" in type_lower:
+            return 0.19
+        return 0.04
+
+    def get_azure_public_ip_price(self, region):
+        """Get Azure Public IPv4 address hourly rate."""
+        return 0.005
+
+    def resolve_custom_azure_vm(self, region, vcpu, memory_gb, os_name="Linux"):
+        """Find the cheapest Azure VM SKU that meets or exceeds vCPU and Memory specs."""
+        azure_vm_specs = {
+            "Standard_B1s": {"vcpu": 1, "memory_gb": 1.0},
+            "Standard_B1ms": {"vcpu": 1, "memory_gb": 2.0},
+            "Standard_B2s": {"vcpu": 2, "memory_gb": 4.0},
+            "Standard_B2ms": {"vcpu": 2, "memory_gb": 8.0},
+            "Standard_B4ms": {"vcpu": 4, "memory_gb": 16.0},
+            "Standard_B8ms": {"vcpu": 8, "memory_gb": 32.0},
+            "Standard_D2s_v5": {"vcpu": 2, "memory_gb": 8.0},
+            "Standard_D4s_v5": {"vcpu": 4, "memory_gb": 16.0},
+            "Standard_D8s_v5": {"vcpu": 8, "memory_gb": 32.0},
+            "Standard_D16s_v5": {"vcpu": 16, "memory_gb": 64.0},
+            "Standard_F2s_v2": {"vcpu": 2, "memory_gb": 4.0},
+            "Standard_F4s_v2": {"vcpu": 4, "memory_gb": 8.0},
+            "Standard_F8s_v2": {"vcpu": 8, "memory_gb": 16.0},
+            "Standard_F16s_v2": {"vcpu": 16, "memory_gb": 32.0},
+            "Standard_E2s_v5": {"vcpu": 2, "memory_gb": 16.0},
+            "Standard_E4s_v5": {"vcpu": 4, "memory_gb": 32.0},
+            "Standard_E8s_v5": {"vcpu": 8, "memory_gb": 64.0},
+            "Standard_E16s_v5": {"vcpu": 16, "memory_gb": 128.0},
+        }
+        
+        matches = []
+        for sku, spec in azure_vm_specs.items():
+            if spec["vcpu"] >= vcpu and spec["memory_gb"] >= memory_gb:
+                price = self.get_azure_vm_price(region, sku, os_name)
+                if price > 0:
+                    matches.append((price, sku, spec["vcpu"], spec["memory_gb"]))
+                    
+        if matches:
+            matches.sort(key=lambda x: x[0])
+            best_price, best_sku, matched_vcpu, matched_mem = matches[0]
+            return best_price, best_sku, matched_vcpu, matched_mem
+            
+        fallback_sku = "Standard_D2s_v5"
+        fallback_price = self.get_azure_vm_price(region, fallback_sku, os_name)
+        return fallback_price, fallback_sku, 2, 8.0
+    
     def initialize_region(self, region):
         """Download and preprocess all required price lists for a region."""
         # EC2 Preprocessing
@@ -1025,6 +1163,53 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
             unit_price = engine.get_public_ip_price(region)
             monthly_price = unit_price * hours * qty
             calc_note = f"Public IPv4 Address / Elastic IP (${unit_price}/hr)"
+        elif service == "azure":
+            matched_type = res_type
+            res_lower = res_type.lower()
+            if "nat" in res_lower:
+                hour_rate, gb_rate = engine.get_azure_nat_gateway_price(region)
+                unit_price = hour_rate
+                hourly_cost = hour_rate * hours * qty
+                processing_cost = gb_rate * size_gb * qty if size_gb > 0 else 0.0
+                monthly_price = hourly_cost + processing_cost
+                calc_note = f"Azure NAT Gateway hourly fee (${hour_rate}/hr)"
+                if size_gb > 0:
+                    calc_note += f" + data processing fee ({size_gb:.1f} GB @ ${gb_rate}/GB)"
+            elif "vpn" in res_lower:
+                unit_price = engine.get_azure_vpn_gateway_price(region, res_type)
+                monthly_price = unit_price * hours * qty
+                calc_note = f"Azure VPN Gateway ({res_type} @ ${unit_price}/hr)"
+            elif "ip" in res_lower or "eip" in res_lower:
+                unit_price = engine.get_azure_public_ip_price(region)
+                monthly_price = unit_price * hours * qty
+                calc_note = f"Azure Public IP Address (${unit_price}/hr)"
+            elif "asr" in res_lower or "site_recovery" in res_lower or "site-recovery" in res_lower:
+                unit_price = 25.00
+                server_cost = qty * unit_price
+                storage_rate = engine.get_azure_storage_price(region, "Standard_HDD")
+                storage_cost = qty * size_gb * storage_rate
+                monthly_price = server_cost + storage_cost
+                calc_note = f"{qty} protected instances (${unit_price}/mo-instance) + Standard HDD replication storage ({size_gb * qty:.1f} GB @ ${storage_rate}/GB-mo)"
+            elif "vm" in res_lower or "standard" in res_lower:
+                unit_price = engine.get_azure_vm_price(region, res_type, os_or_engine)
+                monthly_price = unit_price * hours * qty
+                calc_note = f"Azure VM SKU: {res_type} ({os_or_engine})"
+            elif "storage" in res_lower or "ssd" in res_lower or "hdd" in res_lower or "blob" in res_lower:
+                unit_price = engine.get_azure_storage_price(region, res_type)
+                monthly_price = unit_price * size_gb * qty
+                calc_note = f"Azure Storage Type: {res_type}"
+            else:
+                if res_lower == "custom" or not res_type:
+                    unit_price, resolved_sku, m_vcpu, m_mem = engine.resolve_custom_azure_vm(region, vcpu, memory_gb, os_or_engine)
+                    matched_type = resolved_sku
+                    matched_vcpu = m_vcpu
+                    matched_memory_gb = m_mem
+                    monthly_price = unit_price * hours * qty
+                    calc_note = f"Cheapest Azure VM matching >= {vcpu} vCPU, {memory_gb:.1f} GB RAM ({os_or_engine})"
+                else:
+                    unit_price = engine.get_azure_vm_price(region, res_type, os_or_engine)
+                    monthly_price = unit_price * hours * qty
+                    calc_note = f"Azure VM SKU: {res_type} ({os_or_engine})"
         else:
             calc_note = f"Skipped: Unknown service type '{service}'"
             
@@ -1071,6 +1256,7 @@ def main():
                 
     # Initialize Engine
     engine = PricingEngine(cache_dir=args.cache_dir, region=args.region, pref_arch=args.architecture)
+    engine.initialize_azure_prices()
     
     # Run calculation
     try:

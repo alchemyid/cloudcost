@@ -2,3 +2,4 @@ pyenv
 .DS_Store
 .cache
 *.json
+*cost_estimate.csv
