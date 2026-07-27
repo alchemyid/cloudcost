@@ -119,6 +119,7 @@ class PricingEngine:
         self.dt_cache = {}
         self.pub_dates = {}
         self.drs_cache = {}
+        self.vpc_cache = {}
 
     def get_bulk_url(self, service, region):
         """Build standard public JSON Bulk API URL."""
@@ -428,6 +429,87 @@ class PricingEngine:
                 self.drs_cache[region] = data
                 self.pub_dates[f"drs_{region}"] = data.get("publicationDate", "")
 
+        # VPC Preprocessing (NAT Gateway, VPN, Public IP)
+        vpc_processed = os.path.join(self.cache_dir, f"vpc_{region}_processed.json")
+        if not os.path.exists(vpc_processed):
+            print(f"Preprocessing VPC & Networking pricing for {region}...")
+            # We need raw EC2 for NAT Gateway pricing
+            raw_ec2 = self.fetch_json_with_cache("AmazonEC2", region)
+            nat_hour = 0.059
+            nat_gb = 0.059
+            if raw_ec2:
+                products = raw_ec2.get("products", {})
+                terms = raw_ec2.get("terms", {}).get("OnDemand", {})
+                for sku, product in products.items():
+                    fam = product.get("productFamily")
+                    if fam == "NAT Gateway":
+                        attrs = product.get("attributes", {})
+                        usage = attrs.get("usagetype", "")
+                        sku_terms = terms.get(sku, {})
+                        price = None
+                        for term_val in sku_terms.values():
+                            for dim_val in term_val.get("priceDimensions", {}).values():
+                                price_str = dim_val.get("pricePerUnit", {}).get("USD")
+                                if price_str is not None:
+                                    price = float(price_str)
+                                    break
+                            break
+                        if price is not None:
+                            if "hours" in usage.lower() or "hour" in usage.lower():
+                                nat_hour = price
+                            elif "bytes" in usage.lower() or "gb" in usage.lower():
+                                nat_gb = price
+
+            # We need raw VPC for VPN and EIP pricing
+            raw_vpc = self.fetch_json_with_cache("AmazonVPC", region)
+            vpn_s2s = 0.05
+            vpn_client_end = 0.15
+            vpn_client_conn = 0.05
+            pub_ip = 0.005
+            pub_date_vpc = ""
+            if raw_vpc:
+                pub_date_vpc = raw_vpc.get("publicationDate", "")
+                products = raw_vpc.get("products", {})
+                terms = raw_vpc.get("terms", {}).get("OnDemand", {})
+                for sku, product in products.items():
+                    attrs = product.get("attributes", {})
+                    usage = attrs.get("usagetype", "")
+                    group = attrs.get("group", "")
+                    sku_terms = terms.get(sku, {})
+                    price = None
+                    for term_val in sku_terms.values():
+                        for dim_val in term_val.get("priceDimensions", {}).values():
+                            price_str = dim_val.get("pricePerUnit", {}).get("USD")
+                            if price_str is not None:
+                                price = float(price_str)
+                                break
+                        break
+                    if price is not None:
+                        if "vpn-usage-hours" in usage.lower() or "vpn-concentrator-site-usage-hours" in usage.lower():
+                            vpn_s2s = price
+                        elif "clientvpn-endpointhours" in usage.lower():
+                            vpn_client_end = price
+                        elif "clientvpn-connectionhours" in usage.lower():
+                            vpn_client_conn = price
+                        elif "publicipv4:inuseaddress" in usage.lower() or "publicipv4:idleaddress" in usage.lower():
+                            pub_ip = price
+            
+            vpc_rates = {
+                "publicationDate": pub_date_vpc,
+                "nat_gateway_hour": nat_hour,
+                "nat_gateway_gb": nat_gb,
+                "vpn_site_to_site_hour": vpn_s2s,
+                "vpn_client_endpoint_hour": vpn_client_end,
+                "vpn_client_connection_hour": vpn_client_conn,
+                "public_ip_hour": pub_ip
+            }
+            with open(vpc_processed, "w") as f:
+                json.dump(vpc_rates, f, indent=2)
+                
+        if os.path.exists(vpc_processed):
+            with open(vpc_processed) as f:
+                self.vpc_cache[region] = json.load(f)
+                self.pub_dates[f"vpc_{region}"] = self.vpc_cache[region].get("publicationDate", "")
 
         # S3, EKS, Data Transfer load directly
         raw_s3 = self.fetch_json_with_cache("AmazonS3", region)
@@ -634,6 +716,28 @@ class PricingEngine:
         
         return total_cost, server_cost, storage_cost
 
+    def get_nat_gateway_price(self, region):
+        """Get NAT Gateway hourly fee and per-GB processing fee."""
+        vpc_data = self.vpc_cache.get(region, {})
+        hour_rate = vpc_data.get("nat_gateway_hour", 0.059)
+        gb_rate = vpc_data.get("nat_gateway_gb", 0.059)
+        return hour_rate, gb_rate
+
+    def get_vpn_price(self, region, vpn_type="site-to-site"):
+        """Get VPN hourly rate based on type (site-to-site, client-endpoint, client-connection)."""
+        vpc_data = self.vpc_cache.get(region, {})
+        type_lower = vpn_type.lower()
+        if "client-endpoint" in type_lower:
+            return vpc_data.get("vpn_client_endpoint_hour", 0.15)
+        elif "client-connection" in type_lower:
+            return vpc_data.get("vpn_client_connection_hour", 0.05)
+        else:
+            return vpc_data.get("vpn_site_to_site_hour", 0.05)
+
+    def get_public_ip_price(self, region):
+        """Get Public IPv4 / Elastic IP hourly rate."""
+        vpc_data = self.vpc_cache.get(region, {})
+        return vpc_data.get("public_ip_hour", 0.005)
 
     def get_dt_tiers(self, region):
         """Get tiered egress rates for Data Transfer."""
@@ -903,6 +1007,24 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
             
             monthly_price = server_cost + storage_cost
             calc_note = f"{servers} servers ({hours} hrs/mo @ ${unit_price:.3f}/hr) + {ebs_type} storage ({storage_gb * qty:.1f} GB @ ${storage_rate:.3f}/GB-mo)"
+        elif service == 'nat_gateway' or service == 'nat':
+            hour_rate, gb_rate = engine.get_nat_gateway_price(region)
+            unit_price = hour_rate
+            hourly_cost = hour_rate * hours * qty
+            processing_cost = gb_rate * size_gb * qty if size_gb > 0 else 0.0
+            monthly_price = hourly_cost + processing_cost
+            calc_note = f"NAT Gateway hourly fee (${hour_rate}/hr)"
+            if size_gb > 0:
+                calc_note += f" + data processing fee ({size_gb:.1f} GB @ ${gb_rate}/GB)"
+        elif service == 'vpn' or service == 'vpn_connection':
+            vpn_type = res_type if res_type and res_type.lower() != 'custom' else 'site-to-site'
+            unit_price = engine.get_vpn_price(region, vpn_type)
+            monthly_price = unit_price * hours * qty
+            calc_note = f"VPN Connection ({vpn_type} @ ${unit_price}/hr)"
+        elif service == 'eip' or service == 'public_ip':
+            unit_price = engine.get_public_ip_price(region)
+            monthly_price = unit_price * hours * qty
+            calc_note = f"Public IPv4 Address / Elastic IP (${unit_price}/hr)"
         else:
             calc_note = f"Skipped: Unknown service type '{service}'"
             

@@ -17,6 +17,9 @@ The application works **100% offline** by downloading and caching AWS bulk prici
 | **EKS** (Kubernetes) | Estimates the hourly Kubernetes control plane management fee ($0.10/hour). | `service = eks`<br>Provide number of clusters in `quantity` (defaults to 1). |
 | **Data Transfer** | Computes tiered egress bandwidth costs to the internet, applying region-specific rates (e.g. Jakarta ap-southeast-3 tiers) and automatically discounting the **100 GB global free tier**. | `service = data_transfer`<br>Provide egress volume in `size_gb`. |
 | **DRS** (Disaster Recovery) | Calculates AWS Elastic Disaster Recovery fee (per server replication hour) and staging storage costs (dynamic EBS pricing based on the configured volume type, defaulting to `gp3`). | `service = drs`<br>Provide replication storage size per server in `size_gb`, number of servers in `quantity`, volume type in `type` (e.g., `gp3`), and replication hours in `hours_per_month` (defaults to 730 for 24/7). |
+| **NAT Gateway** | Calculates the hourly fee per NAT Gateway + data processing fee per GB. | `service = nat` or `nat_gateway`<br>Provide NAT Gateway hours in `hours_per_month` (defaults to 730 for 24/7), number of gateways in `quantity` (defaults to 1), and data processed in `size_gb` to include per-GB charges. |
+| **VPN Connection** | Site-to-Site VPN or Client VPN connection costs. | `service = vpn` or `vpn_connection`<br>Provide VPN type in `type` (`site-to-site` for Site-to-Site VPN, `client-endpoint` for Client VPN Endpoints, or `client-connection` for Client VPN Connections), and connection hours in `hours_per_month` (defaults to 730 for 24/7). |
+| **Public Static IP (Elastic IP)** | Billed per public IPv4 address per hour (standard AWS charge of $0.005/hr). | `service = eip` or `public_ip`<br>Provide IP status in `type` (`in-use` or `idle`), number of IPs in `quantity`, and billing hours in `hours_per_month` (defaults to 730). |
 
 ---
 
