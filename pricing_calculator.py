@@ -245,6 +245,15 @@ class PricingEngine:
         """Get Azure Public IPv4 address hourly rate."""
         return 0.005
 
+    def get_alb_price(self, region):
+        """Get AWS ALB hourly rate and LCU rate."""
+        region_lower = region.lower()
+        if "jakarta" in region_lower or "ap-southeast-3" in region_lower:
+            return 0.0252, 0.008
+        elif "singapore" in region_lower or "ap-southeast-1" in region_lower:
+            return 0.0243, 0.008
+        return 0.0225, 0.008
+
     def resolve_custom_azure_vm(self, region, vcpu, memory_gb, os_name="Linux"):
         """Find the cheapest Azure VM SKU that meets or exceeds vCPU and Memory specs."""
         azure_vm_specs = {
@@ -1145,6 +1154,37 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
             
             monthly_price = server_cost + storage_cost
             calc_note = f"{servers} servers ({hours} hrs/mo @ ${unit_price:.3f}/hr) + {ebs_type} storage ({storage_gb * qty:.1f} GB @ ${storage_rate:.3f}/GB-mo)"
+        elif service == 'drs_drill' or service == 'drs-drill':
+            ebs_type = res_type if res_type and res_type.lower() != 'custom' else 'gp3'
+            if not res_type or res_type.lower() == 'custom':
+                unit_price, resolved_type, m_vcpu, m_mem = engine.resolve_custom_ec2(
+                    region, vcpu, memory_gb, os_or_engine, pref_arch
+                )
+                matched_type = resolved_type
+                matched_vcpu = m_vcpu
+                matched_memory_gb = m_mem
+            else:
+                unit_price, _, m_vcpu, m_mem = engine.get_ec2_price(region, res_type, os_or_engine)
+                matched_type = res_type
+                matched_vcpu = m_vcpu
+                matched_memory_gb = m_mem
+                
+            storage_rate = engine.get_ebs_price(region, ebs_type)
+            compute_cost = unit_price * hours * qty
+            storage_cost = storage_rate * size_gb * qty * (hours / 730.0)
+            monthly_price = compute_cost + storage_cost
+            calc_note = f"DR Drill: {matched_type} ({hours} hrs @ ${unit_price:.4f}/hr) + pro-rated {ebs_type} storage ({size_gb * qty:.1f} GB @ ${storage_rate:.3f}/GB-mo)"
+        elif service == 'alb' or service == 'elb' or service == 'load_balancer':
+            hour_rate, lcu_rate = engine.get_alb_price(region)
+            unit_price = hour_rate
+            base_cost = hour_rate * hours * qty
+            lcu_cost = lcu_rate * max(hours, size_gb) * qty
+            monthly_price = base_cost + lcu_cost
+            calc_note = f"Application Load Balancer hourly fee (${hour_rate}/hr)"
+            if size_gb > hours:
+                calc_note += f" + LCU fee based on data processed ({size_gb:.1f} GB @ ${lcu_rate}/LCU-hr)"
+            else:
+                calc_note += f" + Minimum 1 LCU fee (${lcu_rate}/LCU-hr)"
         elif service == 'nat_gateway' or service == 'nat':
             hour_rate, gb_rate = engine.get_nat_gateway_price(region)
             unit_price = hour_rate

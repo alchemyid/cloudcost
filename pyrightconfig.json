@@ -1,0 +1,4 @@
+{
+  "venvPath": ".",
+  "venv": "pyenv/bin/python"
+}

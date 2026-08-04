@@ -14,3 +14,5 @@ az-vpn,azure,southeastasia,vpn_gateway,,0,,0,1,730,Azure VPN Gateway Connection
 az-public-ip,azure,southeastasia,public_ip,,0,,0,2,730,2 Azure Public Static IPs
 az-asr,azure,southeastasia,site_recovery,,0,,50.0,55,730,"Azure Site Recovery to cloud (55 protected servers, 50GB storage each)"
 az-custom,azure,southeastasia,custom,2,4,Linux,0,1,730,Cheapest custom Azure Linux VM matching >= 2 vCPU and 4GB memory
+drs-drill1,drs-drill,ap-southeast-3,custom,2,4,Linux,50.0,55,20,DR Drill test: 55 servers for 20 hours per month
+app-alb,alb,ap-southeast-3,,0,0,,1000,1,730,Application Load Balancer with 1000GB data processed

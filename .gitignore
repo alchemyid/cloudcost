@@ -2,4 +2,7 @@ pyenv
 .DS_Store
 .cache
 *.json
+!pyrightconfig.json
 *cost_estimate.csv
+*.xlsx
+!template.xlxs
