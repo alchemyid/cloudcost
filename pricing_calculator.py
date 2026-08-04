@@ -1268,8 +1268,19 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
         elif service == 'vpn' or service == 'vpn_connection':
             vpn_type = res_type if res_type and res_type.lower() != 'custom' else 'site-to-site'
             unit_price = engine.get_vpn_price(region, vpn_type)
-            monthly_price = unit_price * hours * qty
+            connection_cost = unit_price * hours * qty
+            
+            # Calculate Data Transfer Out over VPN connection if size_gb is specified
+            dt_cost = 0.0
+            dt_rate = 0.0
+            if size_gb > 0:
+                dt_rate = engine.get_dt_tiers(region)[0]["price"]
+                dt_cost = size_gb * qty * dt_rate
+                
+            monthly_price = connection_cost + dt_cost
             calc_note = f"VPN Connection ({vpn_type} @ ${unit_price}/hr)"
+            if size_gb > 0:
+                calc_note += f" + data transfer ({size_gb * qty:.1f} GB @ ${dt_rate:.3f}/GB)"
         elif service == 'eip' or service == 'public_ip':
             unit_price = engine.get_public_ip_price(region)
             monthly_price = unit_price * hours * qty
@@ -1288,8 +1299,18 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
                     calc_note += f" + data processing fee ({size_gb:.1f} GB @ ${gb_rate}/GB)"
             elif "vpn" in res_lower:
                 unit_price = engine.get_azure_vpn_gateway_price(region, res_type)
-                monthly_price = unit_price * hours * qty
+                gateway_cost = unit_price * hours * qty
+                
+                # Calculate Azure VPN Data Transfer Out (using standard Azure Southeast Asia egress rate of $0.087/GB if > 0)
+                dt_cost = 0.0
+                dt_rate = 0.087
+                if size_gb > 0:
+                    dt_cost = size_gb * qty * dt_rate
+                    
+                monthly_price = gateway_cost + dt_cost
                 calc_note = f"Azure VPN Gateway ({res_type} @ ${unit_price}/hr)"
+                if size_gb > 0:
+                    calc_note += f" + data transfer ({size_gb * qty:.1f} GB @ ${dt_rate:.3f}/GB)"
             elif "ip" in res_lower or "eip" in res_lower:
                 unit_price = engine.get_azure_public_ip_price(region)
                 monthly_price = unit_price * hours * qty

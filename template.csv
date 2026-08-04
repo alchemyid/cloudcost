@@ -6,11 +6,11 @@ app-eks,eks,ap-southeast-3,standard,0,0,,0,1,730,EKS Kubernetes Cluster fee
 egress-traffic,data_transfer,ap-southeast-3,,0,0,,1200,1,,Outbound data transfer to Internet (1200 GB)
 drs1,drs,ap-southeast-3,,0,0,0,50.0,55,20,DRS to cloud
 app-nat,nat,ap-southeast-3,,0,0,,100,1,730,NAT Gateway hourly fee and 100GB data processed
-app-vpn,vpn,ap-southeast-3,site-to-site,0,0,,0,1,730,Site-to-Site VPN Connection
+app-vpn,vpn,ap-southeast-3,site-to-site,0,0,,1000,1,730,Site-to-Site VPN Connection with 1000GB data transfer
 app-public-ip,eip,ap-southeast-3,in-use,0,0,,0,2,730,2 Public Static IPs (Elastic IPs)
 az-server,azure,southeastasia,Standard_D2s_v5,2,8,Linux,0,2,730,Azure Web Server
 az-nat,azure,southeastasia,nat_gateway,,0,,100,1,730,Azure NAT Gateway and 100GB data processed
-az-vpn,azure,southeastasia,vpn_gateway,,0,,0,1,730,Azure VPN Gateway Connection
+az-vpn,azure,southeastasia,vpn_gateway,,0,,1000,1,730,Azure VPN Gateway Connection with 1000GB data transfer
 az-public-ip,azure,southeastasia,public_ip,,0,,0,2,730,2 Azure Public Static IPs
 az-asr,azure,southeastasia,site_recovery,,0,,50.0,55,730,"Azure Site Recovery to cloud (55 protected servers, 50GB storage each)"
 az-custom,azure,southeastasia,Standard_B2s,2,4,Linux,0,1,730,Cheapest custom Azure Linux VM matching >= 2 vCPU and 4GB memory
