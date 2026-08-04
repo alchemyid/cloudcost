@@ -60,22 +60,12 @@ def parse_memory(mem_str):
 
 def normalize_os_or_engine(service, val):
     """Normalize input OS or DB engine to match standard AWS values."""
+    service_lower = str(service).lower().strip()
     if not val:
-        return "Linux" if service == "ec2" else "PostgreSQL"
+        return "PostgreSQL" if service_lower == "rds" else "Linux"
     val_lower = str(val).lower().strip()
     
-    if service == "ec2":
-        if "windows" in val_lower:
-            return "Windows"
-        elif "rhel" in val_lower or "red hat" in val_lower:
-            return "RHEL"
-        elif "suse" in val_lower:
-            return "SUSE"
-        elif "linux" in val_lower or "ubuntu" in val_lower or "centos" in val_lower or "debian" in val_lower:
-            return "Linux"
-        return "Linux"  # Default fallback for EC2
-        
-    elif service == "rds":
+    if service_lower == "rds":
         if "postgres" in val_lower:
             return "PostgreSQL"
         elif "mysql" in val_lower:
@@ -86,8 +76,18 @@ def normalize_os_or_engine(service, val):
             return "Oracle"
         elif "sql server" in val_lower or "mssql" in val_lower:
             return "SQL Server"
-            
-    return val
+        return val
+    else:
+        # Treat as EC2 OS (Linux, Windows, RHEL, SUSE, etc.)
+        if "windows" in val_lower:
+            return "Windows"
+        elif "rhel" in val_lower or "red hat" in val_lower:
+            return "RHEL"
+        elif "suse" in val_lower:
+            return "SUSE"
+        elif "linux" in val_lower or "ubuntu" in val_lower or "centos" in val_lower or "debian" in val_lower:
+            return "Linux"
+        return "Linux"  # Default fallback for compute-related services
 
 def get_architecture(instance_type, physical_processor=""):
     """Identify if instance type is arm64 (Graviton) or x86_64."""
@@ -848,14 +848,17 @@ class PricingEngine:
                                 return float(price_str)
         return 0.10
     
-    def get_drs_price(self, region, servers, storage_gb, volume_type="gp3", hours=730):
+    def get_drs_price(self, region, servers, storage_gb, volume_type="snapshot", hours=730):
         """Get AWS DRS cost based on number of servers and storage GB per server."""
         drs_data = self.drs_cache.get(region, {})
         if not drs_data:
-            drs_data = {"server_hour_rate": 0.028, "storage_gb_month_rate": 0.11}
+            drs_data = {"server_hour_rate": 0.028, "storage_gb_month_rate": 0.05}
     
         server_rate = drs_data.get("server_hour_rate", 0.028)
-        storage_rate = self.get_ebs_price(region, volume_type) if volume_type else drs_data.get("storage_gb_month_rate", 0.11)
+        if volume_type and volume_type.lower() == 'snapshot':
+            storage_rate = 0.05
+        else:
+            storage_rate = self.get_ebs_price(region, volume_type) if volume_type else drs_data.get("storage_gb_month_rate", 0.05)
         
         server_cost = servers * server_rate * hours
         storage_cost = servers * storage_gb * storage_rate
@@ -1142,7 +1145,7 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
         elif service == 'drs':
             servers = qty  # Use 'quantity' as number of servers for DRS
             storage_gb = size_gb  # Use 'size_gb' as storage amount for DRS
-            ebs_type = res_type if res_type and res_type.lower() != 'custom' else 'gp3'
+            ebs_type = res_type if res_type and res_type.lower() != 'custom' else 'snapshot'
             
             # Get costs from engine, passing target volume type and hours
             _, server_cost, storage_cost = engine.get_drs_price(
@@ -1150,7 +1153,10 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
             )
             
             unit_price = engine.drs_cache.get(region, {}).get("server_hour_rate", 0.028)
-            storage_rate = engine.get_ebs_price(region, ebs_type)
+            if ebs_type.lower() == 'snapshot':
+                storage_rate = 0.05
+            else:
+                storage_rate = engine.get_ebs_price(region, ebs_type)
             
             monthly_price = server_cost + storage_cost
             calc_note = f"{servers} servers ({hours} hrs/mo @ ${unit_price:.3f}/hr) + {ebs_type} storage ({storage_gb * qty:.1f} GB @ ${storage_rate:.3f}/GB-mo)"
@@ -1174,6 +1180,71 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
             storage_cost = storage_rate * size_gb * qty * (hours / 730.0)
             monthly_price = compute_cost + storage_cost
             calc_note = f"DR Drill: {matched_type} ({hours} hrs @ ${unit_price:.4f}/hr) + pro-rated {ebs_type} storage ({size_gb * qty:.1f} GB @ ${storage_rate:.3f}/GB-mo)"
+        elif service in ['backup', 'aws-backup', 'azure-backup']:
+            # Determine provider from service name or region
+            is_azure = False
+            if service == 'azure-backup' or 'southeastasia' in region.lower() or 'azure' in res_type.lower():
+                is_azure = True
+                
+            # Parse parameters from type column string, custom columns, or fallback to vcpu / memory_gb
+            retention_count = 4
+            change_rate = 10.0
+            
+            # 1. Parse from type string if formatted like "3-retention-100pct" or "3-copies-10%"
+            has_type_numbers = False
+            if res_type and res_type.lower() not in ['custom', 'default', 'standard', '']:
+                numbers = re.findall(r'\d+', res_type)
+                if len(numbers) >= 2:
+                    retention_count = int(numbers[0])
+                    change_rate = float(numbers[1])
+                    has_type_numbers = True
+                elif len(numbers) == 1:
+                    retention_count = int(numbers[0])
+                    has_type_numbers = True
+            
+            # 2. Override with custom columns if present
+            if 'backup_retention' in row and pd.notna(row['backup_retention']):
+                retention_count = int(row['backup_retention'])
+            elif 'retention' in row and pd.notna(row['retention']):
+                retention_count = int(row['retention'])
+            elif vcpu > 0 and not has_type_numbers:
+                retention_count = int(vcpu)
+                
+            if 'backup_change_rate' in row and pd.notna(row['backup_change_rate']):
+                change_rate = float(row['backup_change_rate'])
+            elif 'change_rate' in row and pd.notna(row['change_rate']):
+                change_rate = float(row['change_rate'])
+            elif memory_gb > 0 and not has_type_numbers:
+                change_rate = float(memory_gb)
+            
+            # calculate backup storage multiplier
+            # First backup is full (1.0), subsequent are incremental (change_rate/100)
+            multiplier = 1.0 + (retention_count - 1) * (change_rate / 100.0)
+            total_backup_gb = size_gb * qty * multiplier
+            
+            if is_azure:
+                # Azure Backup pricing:
+                # 1. Protected Instance Fee:
+                # Size <= 50 GB: $5/month
+                # Size <= 500 GB: $10/month
+                # Size > 500 GB: $10 per 500 GB block
+                if size_gb <= 50:
+                    instance_fee_rate = 5.0
+                elif size_gb <= 500:
+                    instance_fee_rate = 10.0
+                else:
+                    instance_fee_rate = float(((int(size_gb) - 1) // 500 + 1) * 10)
+                
+                instance_cost = instance_fee_rate * qty
+                storage_rate = 0.0224  # Azure standard LRS backup storage rate
+                storage_cost = total_backup_gb * storage_rate
+                monthly_price = instance_cost + storage_cost
+                calc_note = f"Azure Backup: {qty} instances (${instance_fee_rate}/mo/inst) + LRS Storage ({total_backup_gb:.1f} GB @ ${storage_rate:.4f}/GB-mo, retention: {retention_count}, change rate: {change_rate}%)"
+            else:
+                # AWS Backup / EBS Snapshot pricing
+                storage_rate = 0.05  # AWS EBS snapshot standard rate
+                monthly_price = total_backup_gb * storage_rate
+                calc_note = f"AWS Backup (EBS Snapshots): {total_backup_gb:.1f} GB @ ${storage_rate:.3f}/GB-mo (retention: {retention_count}, change rate: {change_rate}%)"
         elif service == 'alb' or service == 'elb' or service == 'load_balancer':
             hour_rate, lcu_rate = engine.get_alb_price(region)
             unit_price = hour_rate

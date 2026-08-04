@@ -6,3 +6,4 @@ pyenv
 *cost_estimate.csv
 *.xlsx
 !template.xlxs
+__pycache__

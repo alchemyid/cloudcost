@@ -23,6 +23,7 @@ The application works **100% offline** by downloading and caching AWS bulk prici
 | **VPN Connection** | Site-to-Site VPN or Client VPN connection costs. | `service = vpn` or `vpn_connection`<br>Provide VPN type in `type` (`site-to-site` for Site-to-Site VPN, `client-endpoint` for Client VPN Endpoints, or `client-connection` for Client VPN Connections), and connection hours in `hours_per_month` (defaults to 730 for 24/7). |
 | **Public Static IP (Elastic IP)** | Billed per public IPv4 address per hour (standard AWS charge of $0.005/hr). | `service = eip` or `public_ip`<br>Provide IP status in `type` (`in-use` or `idle`), number of IPs in `quantity`, and billing hours in `hours_per_month` (defaults to 730). |
 | **Azure Services** (Virtual Machines & Storage) | Estimates Azure VM instances (Standard PAYG rates fetched dynamically via Azure Prices API) and Azure Storage volumes (Managed Disks, Blob Storage) using regional rates. | `service = azure`<br>For VMs: provide SKU in `type` (e.g. `Standard_D2s_v5`), operating system in `os_or_engine` (`Linux` or `Windows`).<br>For Storage: provide disk or storage type in `type` (e.g., `Premium_SSD`, `Standard_SSD`, `Standard_HDD`, `Blob Storage`) and size in `size_gb`. |
+| **Backup / Snapshots** | Calculates monthly backup costs for AWS (EBS Snapshots) and Azure (VM Backup) with user-configurable retention and incremental change rates. | `service = backup`, `aws-backup`, or `azure-backup`<br>Provide source VM/volume size in `size_gb`, quantity in `quantity`. Customize retention count in `vcpu` (default: 4) and incremental change rate % in `memory_gb` (default: 10%). |
 
 ---
 
@@ -78,6 +79,21 @@ To optimize performance and enable 100% offline usage, the calculator implements
 
 ---
 
+## Backup & Snapshot Cost Estimation
+
+The `backup` (AWS) and `azure-backup` (Azure) services allow you to estimate snapshot storage costs. You configure this by writing a policy string in the `type` column (e.g., `4-snapshots-5%` or `1-snapshot-100%`).
+
+### Understanding the Parameters:
+1. **Retention Count (The first number)**: The total number of recovery points (snapshots) kept in storage **at any given time**. 
+   * Regardless of frequency (daily, weekly, or monthly), only the snapshots currently stored in the cloud are billed.
+   * If you set **`1-snapshot`**: You only keep 1 snapshot. When the next backup is created (e.g., in week 2), the older backup (from week 1) is deleted, meaning you are only billed for **exactly 1 snapshot** at any time.
+   * If you set **`3-snapshots`**: You keep 3 snapshots. When the 4th backup is created, the 1st one is deleted, meaning you are billed for **exactly 3 snapshots** at any time.
+2. **Incremental Change Rate % (The second number)**: The percentage of data that changes between backups.
+   * **100% (Full Copies)**: No incremental compression. Each snapshot is a full copy. (e.g., keeping 3 full snapshots of a 100 GB volume will bill for $3 \times 100\text{ GB} = 300\text{ GB}$).
+   * **10% (Incremental)**: Standard cloud backup behavior. The first snapshot is full (100% size), and subsequent snapshots only store changed blocks (e.g., keeping 3 incremental snapshots of a 100 GB volume with 10% change rate will bill for $100\text{ GB} + 10\text{ GB} + 10\text{ GB} = 120\text{ GB}$).
+
+---
+
 ## Input Formats
 
 The calculator automatically supports **two input formats**:
@@ -99,11 +115,11 @@ A template CSV with these columns is provided as [template.csv](file:///Users/gi
 | Column Name | Status | Description | Default / Fallback Value |
 | :--- | :--- | :--- | :--- |
 | `id` | **Mandatory** | Unique row identifier (e.g. `web-server`, `db-storage`) | *(None - must be provided)* |
-| `service` | **Mandatory** | Cloud service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`, `drs`, `nat`, `vpn`, `eip`, `azure`) | *(None - must be provided)* |
+| `service` | **Mandatory** | Cloud service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`, `drs`, `nat`, `vpn`, `eip`, `azure`, `backup`, `aws-backup`, `azure-backup`) | *(None - must be provided)* |
 | `region` | **Optional** | Cloud region code (e.g., `ap-southeast-3`, `southeastasia`, `us-east-1`) | `ap-southeast-3` (AWS) / `southeastasia` (Azure) |
 | `type` | **Optional** | Instance type (e.g., `t3.medium`, `Standard_D2s_v5`), volume type (`gp3`), or storage class (`Standard`). Leave blank or enter `custom` for EC2/Azure VM specs matching. | `custom` |
-| `vcpu` | **Optional** | Number of requested vCPUs (used for `custom` compute specs matching) | `0` |
-| `memory_gb` | **Optional** | Gigabytes of requested RAM (used for `custom` compute specs matching) | `0.0` |
+| `vcpu` | **Optional** | Number of requested vCPUs (used for compute specs matching).<br>**For Backup:** Serves as **retention count** (number of recovery points to keep). | `0` (Compute)<br>`4` (Backup default) |
+| `memory_gb` | **Optional** | Gigabytes of requested RAM (used for compute specs matching).<br>**For Backup:** Serves as **incremental change rate %** per snapshot. | `0.0` (Compute)<br>`10.0` (Backup default) |
 | `os_or_engine` | **Optional** | Operating System for EC2/Azure (`Linux`, `Windows`, `RHEL`, `SUSE`) or Database Engine for RDS (`PostgreSQL`, `MySQL`, `MariaDB`, `Oracle`, `SQL Server`).<br>**Smart Mapping:** Accepts vendor names (e.g., `Ubuntu Linux (64-bit)` $\rightarrow$ `Linux`, `Microsoft Windows Server 2022` $\rightarrow$ `Windows`, `PostgreSQL 14` $\rightarrow$ `PostgreSQL`). | `Linux` (for EC2/Azure)<br>`PostgreSQL` (for RDS) |
 | `size_gb` | **Optional** | Storage size in GB (for EBS, RDS storage, S3, Azure storage) or egress volume in GB (for Data Transfer / NAT Gateway processing) | `0.0` |
 | `quantity` | **Optional** | Number of instances/volumes | `1` |
