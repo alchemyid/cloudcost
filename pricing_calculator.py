@@ -1337,6 +1337,21 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
                     
                 monthly_price = size_gb * qty * storage_rate
                 calc_note = f"AWS EFS Storage ({sc_name} @ ${storage_rate:.4f}/GB-mo)"
+        elif service in ['datasync', 'data-sync', 'storage-mover', 'storagemover']:
+            # Determine provider
+            is_azure = False
+            if service in ['storage-mover', 'storagemover'] or 'southeastasia' in region.lower() or 'azure' in res_type.lower():
+                is_azure = True
+                
+            if is_azure:
+                # Azure Storage Mover
+                monthly_price = 0.0
+                calc_note = "Azure Storage Mover: Migration service is Free. Note: Requires deploying a local agent VM on-premises (recommended: 2 vCPU, 4 GB RAM); Target storage (Azure Files/Blob) operations and storage charges apply separately."
+            else:
+                # AWS DataSync
+                datasync_rate = 0.0125  # standard AWS DataSync flat rate per GB
+                monthly_price = size_gb * qty * datasync_rate
+                calc_note = f"AWS DataSync: {size_gb * qty:.1f} GB transferred (@ ${datasync_rate:.4f}/GB). Note: Inbound to AWS is free of data transfer charges; Requires deploying a local agent VM on-premises (recommended: 4 vCPU, 32 GB RAM); Target storage (S3/EFS/FSx) and API fees apply separately."
         elif service == 'alb' or service == 'elb' or service == 'load_balancer':
             hour_rate, lcu_rate = engine.get_alb_price(region)
             unit_price = hour_rate

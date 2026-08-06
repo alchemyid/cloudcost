@@ -25,6 +25,7 @@ The application works **100% offline** by downloading and caching AWS bulk prici
 | **Azure Services** (Virtual Machines & Storage) | Estimates Azure VM instances (Standard PAYG rates fetched dynamically via Azure Prices API) and Azure Storage volumes (Managed Disks, Blob Storage) using regional rates. | `service = azure`<br>For VMs: provide SKU in `type` (e.g. `Standard_D2s_v5`), operating system in `os_or_engine` (`Linux` or `Windows`).<br>For Storage: provide disk or storage type in `type` (e.g., `Premium_SSD`, `Standard_SSD`, `Standard_HDD`, `Blob Storage`) and size in `size_gb`. |
 | **Backup / Snapshots** | Calculates monthly backup costs for AWS (EBS Snapshots) and Azure (VM Backup) with user-configurable retention and incremental change rates. | `service = backup`, `aws-backup`, or `azure-backup`<br>Provide source VM/volume size in `size_gb`, quantity in `quantity`. Configure retention count and incremental change rate % in the `type` column using a readable string (e.g., `3-retention-100%` or `4-copies-10%`). |
 | **NFS (AWS EFS / Azure Files)** | Estimates Network File System (NFS) storage costs for Amazon EFS and Azure Files. | `service = nfs`, `efs`, or `azure-files`<br>Provide capacity in `size_gb` and count in `quantity`. Customize storage class/tier in the `type` column: standard (`standard` / `transaction-optimized`), infrequent access (`ia` / `hot` / `cool`), or `premium` / `archive` classes. |
+| **Migration (AWS DataSync / Azure Storage Mover)** | Estimates data transfer costs for file migrations and highlights agent gateway VM requirements and storage dependencies. | `service = datasync`, `data-sync`, or `storage-mover`<br>Provide data volume migrated in `size_gb` and count in `quantity`. AWS DataSync is priced per GB ($0.0125); Azure Storage Mover itself is free ($0.00). |
 
 ---
 
@@ -116,7 +117,7 @@ A template CSV with these columns is provided as [template.csv](file:///Users/gi
 | Column Name | Status | Description | Default / Fallback Value |
 | :--- | :--- | :--- | :--- |
 | `id` | **Mandatory** | Unique row identifier (e.g. `web-server`, `db-storage`) | *(None - must be provided)* |
-| `service` | **Mandatory** | Cloud service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`, `drs`, `nat`, `vpn`, `eip`, `azure`, `backup`, `aws-backup`, `azure-backup`, `efs`, `nfs`, `azure-files`) | *(None - must be provided)* |
+| `service` | **Mandatory** | Cloud service code (`ec2`, `ebs`, `rds`, `s3`, `eks`, `data_transfer`, `drs`, `nat`, `vpn`, `eip`, `azure`, `backup`, `aws-backup`, `azure-backup`, `efs`, `nfs`, `azure-files`, `datasync`, `data-sync`, `storage-mover`) | *(None - must be provided)* |
 | `region` | **Optional** | Cloud region code (e.g., `ap-southeast-3`, `southeastasia`, `us-east-1`) | `ap-southeast-3` (AWS) / `southeastasia` (Azure) |
 | `type` | **Optional** | Instance type (e.g., `t3.medium`, `Standard_D2s_v5`), volume type (`gp3`), or storage class (`Standard`). Leave blank or enter `custom` for EC2/Azure VM specs matching. | `custom` |
 | `vcpu` | **Optional** | Number of requested vCPUs (used for compute specs matching).<br>**For Backup:** Serves as **retention count** (number of recovery points to keep). | `0` (Compute)<br>`4` (Backup default) |
