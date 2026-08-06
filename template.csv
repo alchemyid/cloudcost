@@ -18,5 +18,7 @@ drs-drill1,drs-drill,ap-southeast-3,custom,2,4,Linux,50.0,55,20,DR Drill test: 5
 app-alb,alb,ap-southeast-3,,0,0,,1000,1,730,Application Load Balancer with 1000GB data processed
 app-backup,backup,ap-southeast-3,3-retention-100%,0,0,,100.0,12,,"AWS Backup EBS Snapshots: 3 retained, 100% change rate (full copies)"
 az-backup,azure-backup,southeastasia,3-copies-10%,0,0,,100.0,12,,"Azure VM Backup: 3 retained, 10% change rate (incremental)"
+app-efs,efs,ap-southeast-3,standard,0,0,,500,1,730,AWS EFS Standard file system (500 GB)
+az-files,azure-files,southeastasia,transaction-optimized,0,0,,500,1,730,Azure Files Transaction-Optimized storage (500 GB)
 
 

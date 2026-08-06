@@ -121,6 +121,7 @@ class PricingEngine:
         self.drs_cache = {}
         self.vpc_cache = {}
         self.azure_cache = {}
+        self.efs_cache = {}
 
     def get_bulk_url(self, service, region):
         """Build standard public JSON Bulk API URL."""
@@ -673,6 +674,56 @@ class PricingEngine:
         if raw_dt:
             self.dt_cache[region] = raw_dt
             self.pub_dates[f"data_transfer_{region}"] = raw_dt.get("publicationDate", "")
+
+        # EFS Preprocessing
+        efs_processed = os.path.join(self.cache_dir, f"efs_{region}_processed.json")
+        if not os.path.exists(efs_processed):
+            raw_efs = self.fetch_json_with_cache("AmazonEFS", region)
+            efs_rates = {
+                "standard": 0.36,
+                "ia": 0.0272,
+                "archive": 0.01
+            }
+            if raw_efs:
+                print(f"Preprocessing EFS pricing for {region}...")
+                pub_date = raw_efs.get("publicationDate", "")
+                products = raw_efs.get("products", {})
+                terms = raw_efs.get("terms", {}).get("OnDemand", {})
+                for sku, product in products.items():
+                    attrs = product.get("attributes", {})
+                    sc = attrs.get("storageClass", "")
+                    ut = attrs.get("usagetype", "")
+                    
+                    if product.get("productFamily") == "Storage":
+                        price = None
+                        sku_terms = terms.get(sku, {})
+                        for term_val in sku_terms.values():
+                            for dim_val in term_val.get("priceDimensions", {}).values():
+                                price_str = dim_val.get("pricePerUnit", {}).get("USD")
+                                if price_str is not None:
+                                    price = float(price_str)
+                                    break
+                            if price is not None:
+                                break
+                                
+                        if price is not None:
+                            if sc == "General Purpose" and "TimedStorage-ByteHrs" in ut:
+                                efs_rates["standard"] = price
+                            elif sc == "Infrequent Access" and "IATimedStorage-ByteHrs" in ut:
+                                efs_rates["ia"] = price
+                            elif sc == "Archive" and "ArchiveTimedStorage-ByteHrs" in ut:
+                                efs_rates["archive"] = price
+                                
+                efs_rates["publicationDate"] = pub_date
+            
+            with open(efs_processed, "w") as f:
+                json.dump(efs_rates, f, indent=2)
+                
+        if os.path.exists(efs_processed):
+            with open(efs_processed) as f:
+                data = json.load(f)
+                self.efs_cache[region] = data
+                self.pub_dates[f"efs_{region}"] = data.get("publicationDate", "")
 
     def get_ec2_price(self, region, instance_type, os_name="Linux"):
         """Get pricing for explicit EC2 instance type."""
@@ -1245,6 +1296,47 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
                 storage_rate = 0.05  # AWS EBS snapshot standard rate
                 monthly_price = total_backup_gb * storage_rate
                 calc_note = f"AWS Backup (EBS Snapshots): {total_backup_gb:.1f} GB @ ${storage_rate:.3f}/GB-mo (retention: {retention_count}, change rate: {change_rate}%)"
+        elif service in ['efs', 'nfs', 'azure-files', 'azure_files', 'azure-file', 'azure_file']:
+            # Determine provider
+            is_azure = False
+            if service in ['azure-files', 'azure_files', 'azure-file', 'azure_file'] or 'southeastasia' in region.lower() or 'azure' in res_type.lower():
+                is_azure = True
+                
+            if is_azure:
+                # Azure Files pricing
+                tier = res_type.lower() if res_type else 'transaction-optimized'
+                if 'premium' in tier:
+                    storage_rate = 0.16
+                    tier_name = "Premium LRS"
+                elif 'hot' in tier:
+                    storage_rate = 0.024
+                    tier_name = "Hot LRS"
+                elif 'cool' in tier:
+                    storage_rate = 0.015
+                    tier_name = "Cool LRS"
+                else:
+                    storage_rate = 0.06  # Transaction Optimized
+                    tier_name = "Transaction Optimized LRS"
+                    
+                monthly_price = size_gb * qty * storage_rate
+                calc_note = f"Azure Files Storage ({tier_name} @ ${storage_rate:.4f}/GB-mo)"
+            else:
+                # AWS EFS pricing
+                storage_class = res_type.lower() if res_type else 'standard'
+                efs_rates = engine.efs_cache.get(region, {"standard": 0.36, "ia": 0.0272, "archive": 0.01})
+                
+                if 'ia' in storage_class or 'infrequent' in storage_class:
+                    storage_rate = efs_rates.get("ia", 0.0272)
+                    sc_name = "Infrequent Access"
+                elif 'archive' in storage_class:
+                    storage_rate = efs_rates.get("archive", 0.01)
+                    sc_name = "Archive"
+                else:
+                    storage_rate = efs_rates.get("standard", 0.36)
+                    sc_name = "Standard"
+                    
+                monthly_price = size_gb * qty * storage_rate
+                calc_note = f"AWS EFS Storage ({sc_name} @ ${storage_rate:.4f}/GB-mo)"
         elif service == 'alb' or service == 'elb' or service == 'load_balancer':
             hour_rate, lcu_rate = engine.get_alb_price(region)
             unit_price = hour_rate
