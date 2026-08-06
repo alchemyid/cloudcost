@@ -478,6 +478,15 @@ class PricingEngine:
                     data = json.load(f)
                     self.drs_cache[region] = data
                     self.pub_dates[f"drs_{region}"] = data.get("publicationDate", "")
+                    
+                    # Perform config update check
+                    server_rate = data.get("server_hour_rate")
+                    if server_rate is not None:
+                        old_rate = PRICING_DEFAULTS.get("drs_server_hourly")
+                        if old_rate != server_rate:
+                            print(f"[PRICE CHANGED] AWS DRS server hourly rate changed from ${old_rate} to ${server_rate}. Updating config.py...")
+                            from .config import update_pricing_default
+                            update_pricing_default("drs_server_hourly", server_rate)
             except Exception as e:
                 logger.error(f"Failed to load processed DRS cache: {e}")
 
@@ -552,6 +561,23 @@ class PricingEngine:
                 with open(vpc_processed, "r") as f:
                     self.vpc_cache[region] = json.load(f)
                     self.pub_dates[f"vpc_{region}"] = self.vpc_cache[region].get("publicationDate", "")
+                    
+                    # Perform config update checks
+                    rates = self.vpc_cache[region]
+                    checks = [
+                        ("vpn_site_to_site_hourly", "vpn_site_to_site_hour"),
+                        ("vpn_client_endpoint_hourly", "vpn_client_endpoint_hour"),
+                        ("vpn_client_connection_hourly", "vpn_client_connection_hour"),
+                        ("public_ip_hourly", "public_ip_hour")
+                    ]
+                    for config_key, cache_key in checks:
+                        new_rate = rates.get(cache_key)
+                        if new_rate is not None:
+                            old_rate = PRICING_DEFAULTS.get(config_key)
+                            if old_rate != new_rate:
+                                print(f"[PRICE CHANGED] AWS VPC rate '{config_key}' changed from ${old_rate} to ${new_rate}. Updating config.py...")
+                                from .config import update_pricing_default
+                                update_pricing_default(config_key, new_rate)
             except Exception as e:
                 logger.error(f"Failed to load processed VPC cache: {e}")
 
@@ -566,6 +592,20 @@ class PricingEngine:
         if raw_eks:
             self.eks_cache[region] = raw_eks
             self.pub_dates[f"eks_{region}"] = raw_eks.get("publicationDate", "")
+            
+            # Check price and update config dynamically
+            products = raw_eks.get("products", {})
+            terms = raw_eks.get("terms", {}).get("OnDemand", {})
+            for sku, product in products.items():
+                attrs = product.get("attributes", {})
+                if "percluster" in attrs.get("usagetype", "").lower():
+                    price = extract_price_from_terms(terms.get(sku, {}))
+                    if price is not None:
+                        old_rate = PRICING_DEFAULTS.get("eks_cluster_hourly")
+                        if old_rate != price:
+                            print(f"[PRICE CHANGED] AWS EKS Cluster hourly fee changed from ${old_rate} to ${price}. Updating config.py...")
+                            from .config import update_pricing_default
+                            update_pricing_default("eks_cluster_hourly", price)
             
         raw_dt = self.fetch_json_with_cache("AWSDataTransfer", region)
         if raw_dt:
@@ -612,6 +652,17 @@ class PricingEngine:
                     data = json.load(f)
                     self.efs_cache[region] = data
                     self.pub_dates[f"efs_{region}"] = data.get("publicationDate", "")
+                    
+                    # Perform config update checks
+                    old_efs_rates = PRICING_DEFAULTS.get("aws_efs_default_rates", {})
+                    updated_rates = {}
+                    for k in ["standard", "ia", "archive"]:
+                        if k in data and data[k] != old_efs_rates.get(k):
+                            print(f"[PRICE CHANGED] AWS EFS {k} storage rate changed from ${old_efs_rates.get(k)} to ${data[k]}. Updating config.py...")
+                            updated_rates[k] = data[k]
+                    if updated_rates:
+                        from .config import update_pricing_default
+                        update_pricing_default("aws_efs_default_rates", updated_rates)
             except Exception as e:
                 logger.error(f"Failed to load processed EFS cache: {e}")
 
