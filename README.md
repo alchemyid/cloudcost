@@ -26,6 +26,7 @@ The application works **100% offline** by downloading and caching AWS bulk prici
 | **Backup / Snapshots** | Calculates monthly backup costs for AWS (EBS Snapshots) and Azure (VM Backup) with user-configurable retention and incremental change rates. | `service = backup`, `aws-backup`, or `azure-backup`<br>Provide source VM/volume size in `size_gb`, quantity in `quantity`. Configure retention count and incremental change rate % in the `type` column using a readable string (e.g., `3-retention-100%` or `4-copies-10%`). |
 | **NFS (AWS EFS / Azure Files)** | Estimates Network File System (NFS) storage costs for Amazon EFS and Azure Files. | `service = nfs`, `efs`, or `azure-files`<br>Provide capacity in `size_gb` and count in `quantity`. Customize storage class/tier in the `type` column: standard (`standard` / `transaction-optimized`), infrequent access (`ia` / `hot` / `cool`), or `premium` / `archive` classes. |
 | **Migration (AWS DataSync / Azure Storage Mover)** | Estimates data transfer costs for file migrations and highlights agent gateway VM requirements and storage dependencies. | `service = datasync`, `data-sync`, or `storage-mover`<br>Provide data volume migrated in `size_gb` and count in `quantity`. AWS DataSync is priced per GB ($0.0125); Azure Storage Mover itself is free ($0.00). |
+| **AWS EKS on Fargate** | Estimates cluster management costs and serverless pod compute costs using Fargate regional rates. Rounds up resources to official tiers with 256MB memory overhead. | `service = eks-fargate` or `eks_fargate`<br>Provide cluster billing hours in `hours_per_month` (default: 730), pod CPU in `vcpu`, pod memory in `memory_gb`, pod count in `quantity`. Set `type` to `arm64` or `x86_64`. |
 
 ---
 
@@ -127,6 +128,23 @@ A template CSV with these columns is provided as [template.csv](file:///Users/gi
 | `quantity` | **Optional** | Number of instances/volumes | `1` |
 | `hours_per_month` | **Optional** | Monthly operational hours (24/7 is 730 hours) | `730` |
 | `description` | **Optional** | Optional text note | `""` |
+
+## AWS EKS on Fargate Calculations & Hidden Costs
+
+AWS EKS on Fargate calculates costs using two core components: EKS cluster management and serverless compute (vCPU and RAM allocated to pods).
+
+### 1. Resource Sizing & Rounding Rules
+AWS Fargate charges based on allocated CPU and Memory at the Pod level, rounded up to standard task sizes:
+* **Memory Overhead**: Fargate automatically adds a mandatory **256 MB (0.256 GB)** overhead to the memory configuration of every pod to accommodate the Fargate agent sidecar.
+* **Size Rounding**: vCPU is rounded up to the nearest standard tier (`0.25`, `0.5`, `1.0`, `2.0`, `4.0`), and memory is adjusted to valid sizes for that CPU tier. The calculator handles this rounding automatically.
+
+### 2. Hidden Cost Factors
+When deploying EKS on Fargate, pay close attention to these architectural drivers that are billed separately:
+* **Public IPv4 Addresses**: If pods are launched in public subnets, each pod's ENI gets a public IPv4 address, billed at **$0.005/hour** (approx. **$3.65/month per pod**). To avoid this, run pods in private subnets.
+* **NAT Gateway Fees**: Running pods in private subnets means all outbound internet traffic (e.g., pulling images, connecting to external APIs) flows through a NAT Gateway. NAT Gateway charges an hourly fee ($0.059/hr in Jakarta) + data processing fee ($0.059/GB).
+* **CloudWatch Logs Ingestion**: EFS or Fargate pods do not have persistent local disks. Standard container logs (stdout/stderr) are usually routed to CloudWatch Logs, which bills for data ingestion (approx. **$0.50 - $0.57 per GB**).
+* **Cross-Availability Zone Traffic**: EKS pods communicating with an RDS instance or other pods in a different Availability Zone (AZ) are charged cross-AZ data transfer fees (**$0.01 per GB** in each direction).
+* **Load Balancer (ALB)**: Exposing pods to external web traffic requires deploying an AWS Application Load Balancer (ALB) which charges separate hourly and LCU fees.
 
 ---
 

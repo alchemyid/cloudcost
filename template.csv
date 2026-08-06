@@ -22,6 +22,8 @@ app-efs,efs,ap-southeast-3,standard,0,0,,500,1,730,AWS EFS Standard file system 
 az-files,azure-files,southeastasia,transaction-optimized,0,0,,500,1,730,Azure Files Transaction-Optimized storage (500 GB)
 app-datasync,datasync,ap-southeast-3,,0,0,,2000,1,,AWS DataSync copying 2000 GB
 az-mover,storage-mover,southeastasia,,0,0,,2000,1,,Azure Storage Mover copying 2000 GB
+app-eks-fargate,eks-fargate,ap-southeast-3,x86_64,0.5,1.0,,0,10,730,EKS running 10 Fargate pods (0.5 vCPU / 1GB RAM requested each)
+
 
 
 

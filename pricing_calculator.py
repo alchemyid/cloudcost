@@ -89,6 +89,43 @@ def normalize_os_or_engine(service, val):
             return "Linux"
         return "Linux"  # Default fallback for compute-related services
 
+def round_fargate_specs(requested_vcpu, requested_mem_gb):
+    """
+    Round vCPU and Memory configurations up to Fargate specs with 256MB overhead.
+    Fargate EKS overhead is 256MB (0.256 GB) per pod.
+    """
+    # 1. Add 256 MB overhead to memory
+    mem_with_overhead = requested_mem_gb + 0.256
+    
+    # 2. Determine vCPU tier
+    if requested_vcpu <= 0.25:
+        billed_vcpu = 0.25
+        # Valid memory for 0.25 vCPU: 0.5, 1.0, 2.0
+        if mem_with_overhead <= 0.5:
+            billed_mem = 0.5
+        elif mem_with_overhead <= 1.0:
+            billed_mem = 1.0
+        else:
+            billed_mem = 2.0
+    elif requested_vcpu <= 0.5:
+        billed_vcpu = 0.5
+        # Valid memory for 0.5 vCPU: 1.0 to 4.0
+        billed_mem = max(1.0, min(4.0, float(int(mem_with_overhead + 0.99))))
+    elif requested_vcpu <= 1.0:
+        billed_vcpu = 1.0
+        # Valid memory for 1.0 vCPU: 2.0 to 8.0
+        billed_mem = max(2.0, min(8.0, float(int(mem_with_overhead + 0.99))))
+    elif requested_vcpu <= 2.0:
+        billed_vcpu = 2.0
+        # Valid memory for 2.0 vCPU: 4.0 to 16.0
+        billed_mem = max(4.0, min(16.0, float(int(mem_with_overhead + 0.99))))
+    else:
+        # Cap vCPU at 4.0
+        billed_vcpu = 4.0
+        # Valid memory for 4.0 vCPU: 8.0 to 30.0
+        billed_mem = max(8.0, min(30.0, float(int(mem_with_overhead + 0.99))))
+    return billed_vcpu, billed_mem
+
 def get_architecture(instance_type, physical_processor=""):
     """Identify if instance type is arm64 (Graviton) or x86_64."""
     if "graviton" in str(physical_processor).lower():
@@ -1094,7 +1131,7 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
         # Fill standard NaN values
         calc_df['region'] = calc_df['region'].fillna(default_region)
         calc_df['type'] = calc_df['type'].fillna('custom')
-        calc_df['vcpu'] = calc_df['vcpu'].fillna(0).astype(int)
+        calc_df['vcpu'] = calc_df['vcpu'].fillna(0.0).astype(float)
         calc_df['memory_gb'] = calc_df['memory_gb'].apply(parse_memory)
         calc_df['os_or_engine'] = calc_df['os_or_engine'].fillna('Linux')
         calc_df['size_gb'] = calc_df['size_gb'].fillna(0.0).astype(float)
@@ -1115,8 +1152,8 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
         service = str(row['service']).lower().strip()
         region = str(row['region']).strip()
         res_type = str(row['type']).strip()
-        vcpu = int(row['vcpu']) if 'vcpu' in row else 0
-        memory_gb = float(row['memory_gb']) if 'memory_gb' in row else 0.0
+        vcpu = float(row['vcpu']) if 'vcpu' in row and pd.notna(row['vcpu']) else 0.0
+        memory_gb = float(row['memory_gb']) if 'memory_gb' in row and pd.notna(row['memory_gb']) else 0.0
         os_or_engine_raw = str(row['os_or_engine']).strip() if 'os_or_engine' in row else ''
         os_or_engine = normalize_os_or_engine(service, os_or_engine_raw)
         size_gb = float(row['size_gb']) if 'size_gb' in row else 0.0
@@ -1189,6 +1226,60 @@ def run_calculation(input_file, engine, default_region="ap-southeast-3", pref_ar
             unit_price = engine.get_eks_price(region)
             monthly_price = unit_price * hours * qty
             calc_note = f"EKS cluster management fee"
+            
+        elif service in ['eks-fargate', 'eks_fargate']:
+            # AWS EKS on Fargate pricing
+            # 1. EKS cluster management fee (for 1 cluster)
+            cluster_fee = engine.get_eks_price(region) * hours
+            
+            # 2. Fargate compute pricing for pods
+            is_arm = False
+            if res_type and ('arm' in res_type.lower() or 'graviton' in res_type.lower()):
+                is_arm = True
+                
+            # Define regional hourly rates for Fargate (Linux x86 baseline)
+            if region == 'ap-southeast-3':
+                vcpu_base = 0.0506
+                mem_base = 0.00556
+            elif region == 'ap-southeast-1':
+                vcpu_base = 0.04856
+                mem_base = 0.005335
+            else:
+                vcpu_base = 0.04048
+                mem_base = 0.004445
+                
+            if is_arm:
+                vcpu_rate = vcpu_base * 0.8
+                mem_rate = mem_base * 0.8
+                arch_name = "ARM64/Graviton"
+            else:
+                vcpu_rate = vcpu_base
+                mem_rate = mem_base
+                arch_name = "x86_64"
+                
+            billed_vcpu, billed_mem = round_fargate_specs(vcpu, memory_gb)
+            
+            pod_hours = hours if hours > 0 else 730
+            pod_qty = qty if qty > 0 else 1
+            
+            compute_cost = (billed_vcpu * vcpu_rate + billed_mem * mem_rate) * pod_hours * pod_qty
+            
+            # Add extra ephemeral storage cost if size_gb > 20
+            extra_storage_cost = 0.0
+            if size_gb > 20:
+                storage_rate = 0.000138 if region == 'ap-southeast-3' else 0.000111
+                extra_storage_cost = (size_gb - 20) * storage_rate * pod_hours * pod_qty
+                compute_cost += extra_storage_cost
+                
+            monthly_price = cluster_fee + compute_cost
+            unit_price = compute_cost / (pod_qty * pod_hours)
+            
+            calc_note = (
+                f"EKS cluster fee + Fargate pods: {pod_qty} pods running {pod_hours} hrs/mo "
+                f"({arch_name}, billed resource/pod: {billed_vcpu} vCPU / {billed_mem} GB RAM after overhead/rounding)"
+            )
+            if size_gb > 20:
+                calc_note += f" + extra storage ({size_gb - 20:.1f} GB @ ${storage_rate:.6f}/GB-hr)"
             
         elif service == 'data_transfer' or service == 'data-transfer':
             monthly_price, calc_note = engine.calculate_dt_cost(region, size_gb)
